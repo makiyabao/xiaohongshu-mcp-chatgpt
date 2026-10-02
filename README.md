@@ -1,8 +1,68 @@
 # xiaohongshu-mcp-chatgpt
 
-本项目基于 [xpzouying/xiaohongshu-mcp](https://github.com/xpzouying/xiaohongshu-mcp) 修改，主要增加面向 ChatGPT / OpenAI Secure MCP Tunnel 的集成与功能扩展。
+让 ChatGPT 成为用户浏览和理解小红书内容的 AI 入口：发来链接，就能在对话中读取笔记、理解图片、总结评论；也支持按需互动与辅助发布。
 
-让 ChatGPT 通过 OpenAI Secure MCP Tunnel 读取和操作小红书。
+## ✨ What can it do?
+
+- 📎 粘贴小红书分享链接，让 ChatGPT 直接读取笔记，无需手动提取笔记 ID。
+- 🖼️ 理解笔记图片内容；需要时，也可以让 ChatGPT 把指定图片展示给你。
+- 💬 查看并总结评论，发现补充说明和相关链接；链接读取默认保留最多 10 条初始一级评论。
+- 🔍 搜索小红书内容，读取感兴趣的笔记。
+- ❤️ 支持点赞、收藏、评论、回复，以及关注和取关，按你的明确要求使用。
+- ✍️ 从 ChatGPT 辅助发布图文，支持聊天图片附件导入和官方 AI 合成内容声明。
+- 🤖 支持 OpenAI Secure MCP Tunnel，让 ChatGPT 连接你自己部署的小红书 MCP。
+
+需要自行部署并登录自己的小红书账号；客户端兼容范围和平台风控限制见下文。写操作请谨慎使用。
+
+## Demo
+
+下面是纯文字使用流程示意，不是真实调用记录；链接为占位示例，使用时替换为自己的小红书分享链接。
+
+```text
+用户输入：
+https://xhslink.cn/YOUR_SHARE_LINK
+帮我看看这篇笔记：图片讲了什么？评论有没有补充？
+
+用户发送小红书链接
+ ↓
+ChatGPT 读取笔记正文、作者和图片索引
+ ↓
+逐张读取相关图片，理解画面及文字内容
+ ↓
+查看并总结初始评论，留意补充说明和相关链接
+ ↓
+输出分析：笔记要点、图片信息、评论补充及待确认的问题
+```
+
+链接读取默认保留最多 10 条初始一级评论，不代表已读完整评论区。模型读图不挂图片 widget；明确要求“把第二张图给我看看”时，再使用图片展示工具。图片是否可读及呈现方式仍受宿主客户端兼容性影响。
+
+真实截图 / GIF：Coming soon。
+
+## 简单工作原理
+
+```text
+用户
+ ↓
+ChatGPT
+ ↓
+OpenAI Secure MCP Tunnel
+ ↓
+Xiaohongshu MCP
+ ↓
+Xiaohongshu
+```
+
+你把链接或问题交给 ChatGPT，它通过你部署的 MCP 读取内容，再帮你理解和总结；互动与发布能力按你的要求使用。
+
+## Why this project?
+
+这个项目不只是把 ChatGPT “连接到小红书”，而是让 ChatGPT 成为用户浏览和理解小红书内容的 AI 入口：由你提出问题，AI 帮你读取、梳理和分析，而不是每次都要手动打开多个 App、查找内容、复制粘贴。
+
+看到一篇小红书笔记，把链接发给 ChatGPT，就可以继续问“这篇在讲什么”“图片里有哪些信息”“评论有没有补充”。从获取信息到理解信息，尽量留在同一段对话里。
+
+## 项目来源与边界
+
+本项目基于 [xpzouying/xiaohongshu-mcp](https://github.com/xpzouying/xiaohongshu-mcp) 修改，主要增加面向 ChatGPT / OpenAI Secure MCP Tunnel 的集成与功能扩展。
 
 这是独立维护的衍生版本，非小红书官方项目、非 OpenAI 官方项目。使用者应自行遵守相关平台规则；不建议高频自动化写操作。保留上游 Apache-2.0 许可证与贡献者署名，修改说明见 [NOTICE](NOTICE)。
 
@@ -52,7 +112,7 @@ MCP 位于私有运行环境中；`tunnel-client` 在能访问 MCP 的机器上�
 
 ### 1. 获取源码与配置
 
-下载本项目源码到自己的目录（本候选阶段尚未发布 GitHub 仓库）。以下命令在项目根目录执行：
+下载或克隆 [本项目源码](https://github.com/makiyabao/xiaohongshu-mcp-chatgpt) 到自己的目录。以下命令在项目根目录执行：
 
 ```bash
 cp .env.example .env
