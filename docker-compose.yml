@@ -1,0 +1,27 @@
+# Modified distribution: local build of the ChatGPT derivative, private listener and persistent storage.
+services:
+  xiaohongshu-mcp:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: xiaohongshu-mcp-chatgpt:local
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:18060:18060"
+    environment:
+      COOKIES_PATH: ${COOKIES_PATH:-/app/data/cookies.json}
+      AUTH_TOKEN: ${AUTH_TOKEN:-}
+      XHS_FP_SEED: ${XHS_FP_SEED:-0}
+      XHS_PROXY: ${XHS_PROXY:-}
+      XHS_PROTECTED_USER_IDS: ${XHS_PROTECTED_USER_IDS:-}
+      # Existing downloader uses os.TempDir(); keep it in the private images volume.
+      TMPDIR: /app/images
+    volumes:
+      - ./data:/app/data
+      - ./images:/app/images
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:18060/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s

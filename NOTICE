@@ -1,0 +1,29 @@
+xiaohongshu-mcp-chatgpt
+
+Derived from xpzouying/xiaohongshu-mcp:
+https://github.com/xpzouying/xiaohongshu-mcp
+
+The upstream work is licensed under Apache License, Version 2.0.
+The upstream LICENSE text and public contributor attributions are retained.
+This notice does not modify the license or imply endorsement by the upstream
+authors, Xiaohongshu, or OpenAI. The upstream snapshot used by the derivative
+was aad2a3d249a347859975ce3b76d3442c4a027780.
+
+Derivative changes by the xiaohongshu-mcp-chatgpt maintainers:
+- MCP Apps image viewer and separate model-only ImageContent reader.
+- Share-link resolution and single-call note reading with limited initial comments.
+- Follow/unfollow state checks, idempotence, and optional protected users.
+- ChatGPT attachment import, expiring server-side image handles, and local image validation.
+- Publish editor stabilization, timeout budgeting, and official AI-content declaration verification.
+- Supporting tools, handlers, tests, and public documentation/configuration.
+
+Modified or added derivative source files carry a prominent modification notice.
+Public packaging additionally supplies an independent README, environment example,
+loopback-only Compose template, safe CI workflow, and expanded ignore rules.
+Two existing tests were adjusted for validator error ordering and Windows temporary
+directory environment variables; production logic is unchanged by those adjustments.
+The video parameter description replaces an absolute user-directory example with
+a server-local path description; its schema type and behavior are unchanged.
+
+No private Git history, runtime data, credentials, or production deployment
+configuration is included in this source distribution.

@@ -1,0 +1,106 @@
+# If you prefer the allow list template instead of the deny list, see community template:
+# https://github.com/github/gitignore/blob/main/community/Golang/Go.AllowList.gitignore
+#
+# Binaries for programs and plugins
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+.idea
+
+# Test binary, built with `go test -c`
+*.test
+
+# Code coverage profiles and other test artifacts
+*.out
+coverage.*
+*.coverprofile
+profile.cov
+
+# Dependency directories (remove the comment below to include it)
+# vendor/
+
+# Go workspace file
+go.work
+go.work.sum
+
+# env file
+.env
+
+# Editor/IDE
+# .idea/
+# .vscode/
+.claude/
+
+# Build artifacts
+xiaohongshu-mcp
+
+# Test scripts
+test_*.sh
+
+# Cookies files (contain sensitive login information)
+cookies.json
+/data/
+/images/
+/runtime.env
+/.env.*
+!.env.example
+/secrets/
+/credentials/
+/*.key
+/*.pem
+/id_rsa
+/id_ed25519
+/*.session
+/*.token
+docker/data/
+docker/images/
+docker/docker-compose.override.yml
+
+# 本地分析/调试产物，不进仓库
+debug/
+.worktrees/
+
+# Modified for xiaohongshu-mcp-chatgpt: exclude private runtime and development data.
+**/.env
+**/.env.*
+!.env.example
+**/runtime.env
+**/secrets/
+**/credentials/
+**/cookies*.json
+**/session.json
+**/sessions.json
+**/tokens.json
+**/image_tokens.json
+**/*.key
+**/*.pem
+**/*.session
+**/*.token
+**/id_rsa*
+**/id_ed25519*
+**/logs/
+**/*.log
+**/*.har
+**/*.sqlite*
+**/*.db
+/cache/
+/tmp/
+/temp/
+/profiles/
+/browser-profile/
+/chrome-profile/
+/user-data/
+/chatgpt_uploads/
+**/__pycache__/
+*.tmp
+*.bak
+*.tar
+*.tar.gz
+*.zip
+/bin/
+/dist/
+SERVER_OPS.md
+BACKUP_NOTES.md
