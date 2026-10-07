@@ -12,7 +12,6 @@ import (
 
 	"github.com/go-rod/rod"
 	"github.com/sirupsen/logrus"
-	"github.com/xpzouying/headless_browser"
 	"github.com/xpzouying/xiaohongshu-mcp/browser"
 	"github.com/xpzouying/xiaohongshu-mcp/configs"
 	"github.com/xpzouying/xiaohongshu-mcp/cookies"
@@ -72,13 +71,14 @@ type PublishResponse struct {
 
 // PublishVideoRequest 发布视频请求（仅支持本地单个视频文件）
 type PublishVideoRequest struct {
-	Title      string   `json:"title" binding:"required"`
-	Content    string   `json:"content" binding:"required"`
-	Video      string   `json:"video" binding:"required"`
-	Tags       []string `json:"tags,omitempty"`
-	ScheduleAt string   `json:"schedule_at,omitempty"` // 定时发布时间，ISO8601格式，为空则立即发布
-	Visibility string   `json:"visibility,omitempty"`  // 可见范围: "公开可见"(默认), "仅自己可见", "仅互关好友可见"
-	Products   []string `json:"products,omitempty"`    // 商品关键词列表，用于绑定带货商品
+	Title       string   `json:"title" binding:"required"`
+	Content     string   `json:"content" binding:"required"`
+	Video       string   `json:"video" binding:"required"`
+	Tags        []string `json:"tags,omitempty"`
+	ScheduleAt  string   `json:"schedule_at,omitempty"`  // 定时发布时间，ISO8601格式，为空则立即发布
+	AIGenerated bool     `json:"ai_generated,omitempty"` // 是否声明含有 AI 合成内容
+	Visibility  string   `json:"visibility,omitempty"`   // 可见范围: "公开可见"(默认), "仅自己可见", "仅互关好友可见"
+	Products    []string `json:"products,omitempty"`     // 商品关键词列表，用于绑定带货商品
 }
 
 // PublishVideoResponse 发布视频响应
@@ -115,7 +115,7 @@ func (s *XiaohongshuService) CheckLoginStatus(ctx context.Context) (*LoginStatus
 	defer b.Close()
 
 	page := b.NewPage()
-	defer page.Close()
+	defer closeBrowserPage(page)
 
 	loginAction := xiaohongshu.NewLogin(page)
 
@@ -147,7 +147,7 @@ func (s *XiaohongshuService) GetLoginQrcode(ctx context.Context) (*LoginQrcodeRe
 	page := b.NewPage()
 
 	deferFunc := func() {
-		_ = page.Close()
+		closeBrowserPage(page)
 		b.Close()
 	}
 
@@ -211,6 +211,14 @@ func (s *XiaohongshuService) waitScanInBackground(
 
 // PublishContent 发布内容
 func (s *XiaohongshuService) PublishContent(ctx context.Context, req *PublishRequest) (*PublishResponse, error) {
+	release, err := globalBrowserWrites.acquire(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	if err := uncertainImagePublishes.check(req, time.Now()); err != nil {
+		return nil, err
+	}
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
 	// 验证标题长度（小红书限制：最大20个字）
@@ -290,6 +298,7 @@ func (s *XiaohongshuService) PublishContent(ctx context.Context, req *PublishReq
 	}
 
 	if err := s.publishContent(ctx, content); err != nil {
+		uncertainImagePublishes.record(req, err, time.Now())
 		logrus.Errorf("发布内容失败: %v", err)
 		return nil, err
 	}
@@ -336,8 +345,8 @@ func (s *XiaohongshuService) publishContent(ctx context.Context, content xiaohon
 	b := newBrowser()
 	defer b.Close()
 
-	page := b.NewPage().Context(ctx)
-	defer page.Close()
+	page := b.NewPage(ctx).Context(ctx)
+	defer closeBrowserPage(page)
 
 	logrus.WithField("stage", "navigate_creator").Info("发布阶段")
 	action, err := xiaohongshu.NewPublishImageAction(page)
@@ -350,6 +359,13 @@ func (s *XiaohongshuService) publishContent(ctx context.Context, content xiaohon
 
 // PublishVideo 发布视频（本地文件）
 func (s *XiaohongshuService) PublishVideo(ctx context.Context, req *PublishVideoRequest) (*PublishVideoResponse, error) {
+	release, err := globalBrowserWrites.acquire(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	defer cancel()
 	// 标题长度校验（小红书限制：最大20个字）
 	if xhsutil.CalcTitleLength(req.Title) > 20 {
 		return nil, fmt.Errorf("标题长度超过限制")
@@ -394,6 +410,7 @@ func (s *XiaohongshuService) PublishVideo(ctx context.Context, req *PublishVideo
 		Tags:         req.Tags,
 		VideoPath:    req.Video,
 		ScheduleTime: scheduleTime,
+		AIGenerated:  req.AIGenerated,
 		Visibility:   req.Visibility,
 		Products:     req.Products,
 	}
@@ -416,8 +433,8 @@ func (s *XiaohongshuService) publishVideo(ctx context.Context, content xiaohongs
 	b := newBrowser()
 	defer b.Close()
 
-	page := b.NewPage()
-	defer page.Close()
+	page := b.NewPage(ctx).Context(ctx)
+	defer closeBrowserPage(page)
 
 	action, err := xiaohongshu.NewPublishVideoAction(page)
 	if err != nil {
@@ -433,7 +450,7 @@ func (s *XiaohongshuService) ListFeeds(ctx context.Context) (*FeedsListResponse,
 	defer b.Close()
 
 	page := b.NewPage()
-	defer page.Close()
+	defer closeBrowserPage(page)
 
 	action := xiaohongshu.NewFeedsListAction(page)
 
@@ -456,7 +473,7 @@ func (s *XiaohongshuService) SearchFeeds(ctx context.Context, keyword string, fi
 	defer b.Close()
 
 	page := b.NewPage()
-	defer page.Close()
+	defer closeBrowserPage(page)
 
 	action := xiaohongshu.NewSearchAction(page)
 
@@ -484,7 +501,7 @@ func (s *XiaohongshuService) GetFeedDetailWithConfig(ctx context.Context, feedID
 	defer b.Close()
 
 	page := b.NewPage()
-	defer page.Close()
+	defer closeBrowserPage(page)
 
 	action := xiaohongshu.NewFeedDetailAction(page)
 
@@ -512,7 +529,7 @@ func (s *XiaohongshuService) UserProfile(ctx context.Context, userID, xsecToken,
 	defer b.Close()
 
 	page := b.NewPage()
-	defer page.Close()
+	defer closeBrowserPage(page)
 
 	action := xiaohongshu.NewUserProfileAction(page)
 
@@ -532,29 +549,44 @@ func (s *XiaohongshuService) UserProfile(ctx context.Context, userID, xsecToken,
 
 // FollowUser follows exactly one user after reading the current page state.
 func (s *XiaohongshuService) FollowUser(ctx context.Context, userID, xsecToken string) (*xiaohongshu.FollowResult, error) {
+	release, err := globalBrowserWrites.acquire(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	b := newBrowser()
 	defer b.Close()
-	page := b.NewPage()
-	defer page.Close()
+	page := b.NewPage(ctx)
+	defer closeBrowserPage(page)
 	return xiaohongshu.NewFollowAction(page).SetFollow(ctx, userID, xsecToken, true, false, nil)
 }
 
 // UnfollowUser unfollows exactly one user after explicit state confirmation.
 func (s *XiaohongshuService) UnfollowUser(ctx context.Context, userID, xsecToken string, override bool) (*xiaohongshu.FollowResult, error) {
+	release, err := globalBrowserWrites.acquire(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	b := newBrowser()
 	defer b.Close()
-	page := b.NewPage()
-	defer page.Close()
+	page := b.NewPage(ctx)
+	defer closeBrowserPage(page)
 	return xiaohongshu.NewFollowAction(page).SetFollow(ctx, userID, xsecToken, false, override, configs.ProtectedUserIDs())
 }
 
 // PostCommentToFeed 发表评论到Feed
 func (s *XiaohongshuService) PostCommentToFeed(ctx context.Context, feedID, xsecToken, content string) (*PostCommentResponse, error) {
+	release, err := globalBrowserWrites.acquire(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	b := newBrowser()
 	defer b.Close()
 
-	page := b.NewPage()
-	defer page.Close()
+	page := b.NewPage(ctx)
+	defer closeBrowserPage(page)
 
 	action := xiaohongshu.NewCommentFeedAction(page)
 
@@ -567,11 +599,16 @@ func (s *XiaohongshuService) PostCommentToFeed(ctx context.Context, feedID, xsec
 
 // LikeFeed 点赞笔记
 func (s *XiaohongshuService) LikeFeed(ctx context.Context, feedID, xsecToken string) (*ActionResult, error) {
+	release, err := globalBrowserWrites.acquire(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	b := newBrowser()
 	defer b.Close()
 
-	page := b.NewPage()
-	defer page.Close()
+	page := b.NewPage(ctx)
+	defer closeBrowserPage(page)
 
 	action := xiaohongshu.NewLikeAction(page)
 	if err := action.Like(ctx, feedID, xsecToken); err != nil {
@@ -582,11 +619,16 @@ func (s *XiaohongshuService) LikeFeed(ctx context.Context, feedID, xsecToken str
 
 // UnlikeFeed 取消点赞笔记
 func (s *XiaohongshuService) UnlikeFeed(ctx context.Context, feedID, xsecToken string) (*ActionResult, error) {
+	release, err := globalBrowserWrites.acquire(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	b := newBrowser()
 	defer b.Close()
 
-	page := b.NewPage()
-	defer page.Close()
+	page := b.NewPage(ctx)
+	defer closeBrowserPage(page)
 
 	action := xiaohongshu.NewLikeAction(page)
 	if err := action.Unlike(ctx, feedID, xsecToken); err != nil {
@@ -597,11 +639,16 @@ func (s *XiaohongshuService) UnlikeFeed(ctx context.Context, feedID, xsecToken s
 
 // FavoriteFeed 收藏笔记
 func (s *XiaohongshuService) FavoriteFeed(ctx context.Context, feedID, xsecToken string) (*ActionResult, error) {
+	release, err := globalBrowserWrites.acquire(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	b := newBrowser()
 	defer b.Close()
 
-	page := b.NewPage()
-	defer page.Close()
+	page := b.NewPage(ctx)
+	defer closeBrowserPage(page)
 
 	action := xiaohongshu.NewFavoriteAction(page)
 	if err := action.Favorite(ctx, feedID, xsecToken); err != nil {
@@ -612,11 +659,16 @@ func (s *XiaohongshuService) FavoriteFeed(ctx context.Context, feedID, xsecToken
 
 // UnfavoriteFeed 取消收藏笔记
 func (s *XiaohongshuService) UnfavoriteFeed(ctx context.Context, feedID, xsecToken string) (*ActionResult, error) {
+	release, err := globalBrowserWrites.acquire(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	b := newBrowser()
 	defer b.Close()
 
-	page := b.NewPage()
-	defer page.Close()
+	page := b.NewPage(ctx)
+	defer closeBrowserPage(page)
 
 	action := xiaohongshu.NewFavoriteAction(page)
 	if err := action.Unfavorite(ctx, feedID, xsecToken); err != nil {
@@ -627,11 +679,16 @@ func (s *XiaohongshuService) UnfavoriteFeed(ctx context.Context, feedID, xsecTok
 
 // ReplyCommentToFeed 回复指定评论
 func (s *XiaohongshuService) ReplyCommentToFeed(ctx context.Context, feedID, xsecToken, commentID, userID, content string) (*ReplyCommentResponse, error) {
+	release, err := globalBrowserWrites.acquire(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	b := newBrowser()
 	defer b.Close()
 
-	page := b.NewPage()
-	defer page.Close()
+	page := b.NewPage(ctx)
+	defer closeBrowserPage(page)
 
 	action := xiaohongshu.NewCommentFeedAction(page)
 
@@ -654,7 +711,7 @@ func (s *XiaohongshuService) GetUnreadCount(ctx context.Context) (*xiaohongshu.N
 	defer b.Close()
 
 	page := b.NewPage()
-	defer page.Close()
+	defer closeBrowserPage(page)
 
 	return xiaohongshu.NewNotificationAction(page).UnreadCount(ctx)
 }
@@ -670,38 +727,48 @@ func (s *XiaohongshuService) ListNotifications(ctx context.Context, tab string, 
 	defer b.Close()
 
 	page := b.NewPage()
-	defer page.Close()
+	defer closeBrowserPage(page)
 
 	return xiaohongshu.NewNotificationAction(page).List(ctx, parsed, limit)
 }
 
 // LikeNotification 给通知里的评论点赞或取消点赞
 func (s *XiaohongshuService) LikeNotification(ctx context.Context, commentID string, unlike bool) (*xiaohongshu.NotificationLikeResult, error) {
+	release, err := globalBrowserWrites.acquire(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	b := newBrowser()
 	defer b.Close()
 
-	page := b.NewPage()
-	defer page.Close()
+	page := b.NewPage(ctx)
+	defer closeBrowserPage(page)
 
 	return xiaohongshu.NewNotificationAction(page).Like(ctx, commentID, unlike)
 }
 
 // ReplyNotification 在通知页就地回复评论
 func (s *XiaohongshuService) ReplyNotification(ctx context.Context, commentID, content string) (*xiaohongshu.NotificationReplyResult, error) {
+	release, err := globalBrowserWrites.acquire(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	b := newBrowser()
 	defer b.Close()
 
-	page := b.NewPage()
-	defer page.Close()
+	page := b.NewPage(ctx)
+	defer closeBrowserPage(page)
 
 	return xiaohongshu.NewNotificationAction(page).Reply(ctx, commentID, content)
 }
 
-func newBrowser() *headless_browser.Browser {
-	return browser.NewBrowser(configs.IsHeadless(),
+func newBrowser() *managedBrowser {
+	return manageBrowser(browser.NewBrowser(configs.IsHeadless(),
 		browser.WithFingerprintSeed(configs.FingerprintSeed()),
 		browser.WithProxy(configs.Proxy()),
-	)
+	))
 }
 
 func saveCookies(page *rod.Page) error {
@@ -725,7 +792,7 @@ func withBrowserPage(fn func(*rod.Page) error) error {
 	defer b.Close()
 
 	page := b.NewPage()
-	defer page.Close()
+	defer closeBrowserPage(page)
 
 	return fn(page)
 }

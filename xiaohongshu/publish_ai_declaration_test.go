@@ -60,7 +60,25 @@ func TestAIGeneratedTrueSelectsAndVerifies(t *testing.T) {
 		t.Fatal(err)
 	}
 	if ui.openCalls != 1 || ui.selectCalls != 1 || ui.stateCheckCalls != 2 {
-		t.Fatalf("expected open, select, and final state verification; got %+v", ui)
+		t.Fatalf("expected open, select once, and verification without reopening; got %+v", ui)
+	}
+}
+
+func TestAIGeneratedAlreadySelectedDoesNotClickAgain(t *testing.T) {
+	ui := &fakeAIDeclarationUI{states: []bool{true}, openFound: true}
+	if err := ensureAIGeneratedDeclaration(ui, true); err != nil {
+		t.Fatal(err)
+	}
+	if ui.openCalls != 1 || ui.selectCalls != 0 || ui.stateCheckCalls != 1 {
+		t.Fatalf("already-selected AI option must not be clicked again: %+v", ui)
+	}
+}
+
+func TestAIGeneratedMissingOptionStops(t *testing.T) {
+	ui := &fakeAIDeclarationUI{states: []bool{false}, openFound: true}
+	err := ensureAIGeneratedDeclaration(ui, true)
+	if err == nil || !strings.Contains(err.Error(), "找不到AI声明选项") {
+		t.Fatalf("expected missing-option error, got %v", err)
 	}
 }
 

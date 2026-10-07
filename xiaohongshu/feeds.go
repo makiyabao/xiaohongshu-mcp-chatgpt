@@ -1,3 +1,4 @@
+// Modified by the xiaohongshu-mcp-chatgpt maintainers; see NOTICE for derivative changes.
 package xiaohongshu
 
 import (
@@ -15,18 +16,16 @@ type FeedsListAction struct {
 }
 
 func NewFeedsListAction(page *rod.Page) *FeedsListAction {
-	pp := page.Timeout(60 * time.Second)
-
-	pp.MustNavigate("https://www.xiaohongshu.com")
-	pp.MustWaitDOMStable()
-
-	return &FeedsListAction{page: pp}
+	return &FeedsListAction{page: page}
 }
 
 // GetFeedsList 获取页面的 Feed 列表数据
 func (f *FeedsListAction) GetFeedsList(ctx context.Context) ([]Feed, error) {
 	// 重设超时：.Context(ctx) 会替换掉构造函数里 Timeout(60s) 的 deadline
 	page := f.page.Context(ctx).Timeout(60 * time.Second)
+	if err := NavigateBrowserPage(page, "https://www.xiaohongshu.com", "feeds.navigate"); err != nil {
+		return nil, err
+	}
 
 	readFeeds := func() string {
 		return page.MustEval(`() => {

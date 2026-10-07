@@ -1,3 +1,4 @@
+// Modified by the xiaohongshu-mcp-chatgpt maintainers; see NOTICE for derivative changes.
 package xiaohongshu
 
 import (
@@ -54,15 +55,19 @@ func (u *UserProfileAction) UserProfile(ctx context.Context, userID, xsecToken s
 	page := u.page.Context(ctx).Timeout(60 * time.Second) // 重设被 .Context 清掉的 deadline
 
 	searchURL := makeUserProfileURL(userID, xsecToken, tab)
-	page.MustNavigate(searchURL)
-	page.MustWaitStable()
+	if err := NavigateBrowserPage(page, searchURL, "user_profile.navigate"); err != nil {
+		return nil, err
+	}
 
 	return u.extractUserProfileData(page, tab)
 }
 
 // extractUserProfileData 从页面中提取用户资料数据的通用方法
 func (u *UserProfileAction) extractUserProfileData(page *rod.Page, tab ProfileTab) (*UserProfileResponse, error) {
-	page.MustWait(`() => window.__INITIAL_STATE__ !== undefined`)
+	if err := waitPageState(page, "profile.data", "__INITIAL_STATE__.user.userPageData", `() => !!window.__INITIAL_STATE__?.user?.userPageData`); err != nil {
+		return nil, err
+	}
+	page = page.Timeout(elementStepTimeout)
 
 	userDataResult := page.MustEval(`() => {
 		if (window.__INITIAL_STATE__ &&
@@ -152,12 +157,14 @@ func (u *UserProfileAction) GetMyProfileViaSidebar(ctx context.Context, tab Prof
 	navigate := NewNavigate(page)
 
 	// 通过侧边栏导航到个人主页
-	if err := navigate.ToProfilePage(ctx); err != nil {
+	if err := navigate.ToProfilePage(page.GetContext()); err != nil {
 		return nil, fmt.Errorf("failed to navigate to profile page via sidebar: %w", err)
 	}
 
 	// 等待页面加载完成并获取 __INITIAL_STATE__
-	page.MustWaitStable()
+	if err := waitPageState(page, "profile.ready", "userPageData", `() => !!window.__INITIAL_STATE__?.user?.userPageData`); err != nil {
+		return nil, err
+	}
 
 	if err := u.selectTab(ctx, page, tab); err != nil {
 		return nil, err
@@ -173,6 +180,25 @@ func (u *UserProfileAction) selectTab(ctx context.Context, page *rod.Page, tab P
 	}
 
 	label := tabLabel[tab]
+	if err := BrowserStep(page, "profile.tab_snapshot", "tab generation", elementStepTimeout, func(p *rod.Page) error {
+		_, err := p.Eval(`(target) => {
+		  const unwrap = x => x && (x.value !== undefined ? x.value : x._value);
+		  const user = window.__INITIAL_STATE__?.user;
+		  const active = unwrap(user?.activeTab) || {};
+		  const notes = unwrap(user?.notes) || [];
+		  const index = {note:0,fav:1,liked:2}[target];
+		  const current = notes[active.index || 0];
+		  window.__xhsMcpTabWait = {target, old:current, signature:JSON.stringify(current),
+		    cached:notes[index], cachedSeparate:notes[index] !== undefined && notes[index] !== current,
+		    already:active.query === target};
+		}`, string(tab))
+		return err
+	}); err != nil {
+		return err
+	}
+	defer func() {
+		_ = BrowserStep(page, "profile.tab_cleanup", "tab generation", time.Second, func(p *rod.Page) error { _, err := p.Eval(`() => {delete window.__xhsMcpTabWait}`); return err })
+	}()
 	elems, err := page.Elements(`.reds-tab-item.sub-tab-list`)
 	if err != nil {
 		return fmt.Errorf("未找到主页子 tab: %w", err)
@@ -187,9 +213,20 @@ func (u *UserProfileAction) selectTab(ctx context.Context, page *rod.Page, tab P
 		if err := humanize.Click(elem); err != nil {
 			return fmt.Errorf("切换到 %s 失败: %w", label, err)
 		}
-		humanize.Delay(ctx, humanize.AfterClick)
-		page.MustWaitStable()
-		return nil
+		return waitPageState(page, "profile.tab", "active tab and committed target data", `() => {
+		  const unwrap = x => x && (x.value !== undefined ? x.value : x._value);
+		  const user = window.__INITIAL_STATE__?.user, wait = window.__xhsMcpTabWait;
+		  const active = unwrap(user?.activeTab) || {}, notes = unwrap(user?.notes);
+		  if (!wait || active.query !== wait.target || !Array.isArray(notes)) return false;
+		  const targetIndex = {note:0,fav:1,liked:2}[wait.target];
+		  if (active.index !== targetIndex) return false;
+		  const current = notes[targetIndex];
+		  if (!Array.isArray(current)) return false;
+		  if (document.querySelector('.notes-loading,.feeds-loading,[aria-busy="true"]')) return false;
+		  return wait.already || (wait.cachedSeparate && current === wait.cached) ||
+		    (current !== wait.old && JSON.stringify(current) !== wait.signature) ||
+		    (current !== wait.old && current.length === 0) || JSON.stringify(current) !== wait.signature;
+		}`)
 	}
 	return fmt.Errorf("未找到子 tab %q", label)
 }

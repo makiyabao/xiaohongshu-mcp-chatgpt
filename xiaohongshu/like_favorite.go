@@ -1,3 +1,4 @@
+// Modified by the xiaohongshu-mcp-chatgpt maintainers; see NOTICE for derivative changes.
 package xiaohongshu
 
 import (
@@ -43,20 +44,21 @@ func newInteractAction(page *rod.Page) *interactAction {
 	return &interactAction{page: page}
 }
 
-func (a *interactAction) preparePage(ctx context.Context, actionType interactActionType, feedID, xsecToken string) *rod.Page {
+func (a *interactAction) preparePage(ctx context.Context, actionType interactActionType, feedID, xsecToken string) (*rod.Page, error) {
 	page := a.page.Context(ctx).Timeout(60 * time.Second)
 	url := makeFeedDetailURL(feedID, xsecToken)
-	logrus.Infof("Opening feed detail page for %s: %s", actionType, url)
+	logrus.Infof("Opening feed detail page for %s: %s", actionType, safeDiagnosticURL(url))
 
-	page.MustNavigate(url)
-	page.MustWaitDOMStable()
+	if err := NavigateBrowserPage(page, url, "interact.prepare"); err != nil {
+		return nil, err
+	}
 	humanize.Delay(ctx, humanize.AfterNavigate)
 
-	return page
+	return page, nil
 }
 
 func (a *interactAction) performClick(page *rod.Page, selector string) error {
-	element, err := page.Element(selector)
+	element, err := stepElement(page, "interact.button", selector)
 	if err != nil {
 		return fmt.Errorf("未找到交互元素 %s: %w", selector, err)
 	}
@@ -132,7 +134,10 @@ func (a *LikeAction) perform(ctx context.Context, feedID, xsecToken string, targ
 		actionType = actionUnlike
 	}
 
-	page := a.preparePage(ctx, actionType, feedID, xsecToken)
+	page, err := a.preparePage(ctx, actionType, feedID, xsecToken)
+	if err != nil {
+		return err
+	}
 
 	liked, _, err := a.getInteractState(page, feedID)
 	if err != nil {
@@ -179,7 +184,10 @@ func (a *FavoriteAction) perform(ctx context.Context, feedID, xsecToken string, 
 		actionType = actionUnfavorite
 	}
 
-	page := a.preparePage(ctx, actionType, feedID, xsecToken)
+	page, err := a.preparePage(ctx, actionType, feedID, xsecToken)
+	if err != nil {
+		return err
+	}
 
 	_, collected, err := a.getInteractState(page, feedID)
 	if err != nil {

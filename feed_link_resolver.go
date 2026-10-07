@@ -267,15 +267,9 @@ func (s *XiaohongshuService) readFeedStateFromURL(ctx context.Context, resolvedU
 	defer b.Close()
 
 	page := b.NewPage().Context(ctx).Timeout(feedLinkPageTimeout)
-	defer page.Close()
-	if err := page.Navigate(resolvedURL.String()); err != nil {
+	defer closeBrowserPage(page)
+	if err := xiaohongshu.NavigateBrowserPage(page, resolvedURL.String(), "share_link.navigate"); err != nil {
 		return empty, nil, fmt.Errorf("打开笔记页面失败: %w", err)
-	}
-	if err := page.WaitLoad(); err != nil {
-		return empty, nil, fmt.Errorf("等待笔记页面失败: %w", err)
-	}
-	if err := page.WaitStable(500 * time.Millisecond); err != nil {
-		logrus.Debugf("解析分享链接时页面未完全稳定: %v", err)
 	}
 
 	location, err := page.Eval(`() => location.href`)

@@ -1,3 +1,4 @@
+// Modified by the xiaohongshu-mcp-chatgpt maintainers; see NOTICE for derivative changes.
 package xiaohongshu
 
 import (
@@ -105,21 +106,29 @@ func (s *SearchAction) Search(ctx context.Context, keyword string, filters ...Fi
 	page := s.page.Context(ctx).Timeout(60 * time.Second)
 
 	searchURL := makeSearchURL(keyword)
-	page.MustNavigate(searchURL)
-	page.MustWaitStable()
-	page.MustWait(`() => window.__INITIAL_STATE__ !== undefined`)
+	if err := NavigateBrowserPage(page, searchURL, "search.navigate"); err != nil {
+		return nil, err
+	}
+	if err := waitPageState(page, "search.state", "__INITIAL_STATE__", `() => window.__INITIAL_STATE__ !== undefined`); err != nil {
+		return nil, err
+	}
 	humanize.Delay(ctx, humanize.AfterNavigate)
 
 	if len(pending) > 0 {
 		// 悬停在筛选按钮上展开面板
-		filterButton := page.MustElement(`div.filter`)
+		filterButton, err := stepElement(page, "search.filter", `div.filter`)
+		if err != nil {
+			return nil, err
+		}
 		if err := humanize.Hover(filterButton); err != nil {
 			return nil, fmt.Errorf("悬停筛选按钮失败: %w", err)
 		}
 		humanize.Delay(ctx, humanize.BeforeClick)
 
 		// 等待筛选面板出现
-		page.MustWait(`() => document.querySelector('div.filter-panel') !== null`)
+		if err := waitPageState(page, "search.filter_panel", "div.filter-panel", `() => document.querySelector('div.filter-panel') !== null`); err != nil {
+			return nil, err
+		}
 
 		// 记下筛选前的结果，用来判断筛选后的数据什么时候到位
 		before := readFeedIDs(page)

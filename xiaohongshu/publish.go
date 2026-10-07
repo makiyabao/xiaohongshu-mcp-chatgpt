@@ -20,6 +20,7 @@ import (
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
 	"github.com/xpzouying/xiaohongshu-mcp/humanize"
+	"github.com/xpzouying/xiaohongshu-mcp/internal/rodscope"
 )
 
 // PublishImageContent 发布图文内容
@@ -47,28 +48,37 @@ const (
 )
 
 func NewPublishImageAction(page *rod.Page) (*PublishAction, error) {
-
-	pp := page.Timeout(300 * time.Second)
-
-	if err := pp.Navigate(urlOfPublic); err != nil {
-		return nil, errors.Wrap(err, "导航到发布页面失败")
-	}
-
-	if err := pp.WaitLoad(); err != nil {
-		logrus.Warnf("等待页面加载出现问题: %v，继续尝试", err)
-	}
-	if err := pp.WaitDOMStable(time.Second, 0.1); err != nil {
-		logrus.Warnf("等待 DOM 稳定出现问题: %v，继续尝试", err)
-	}
-
-	if err := mustClickPublishTab(pp, "上传图文"); err != nil {
-		logrus.Errorf("点击上传图文 TAB 失败: %v", err)
+	if err := preparePublishPage(page, "上传图文"); err != nil {
 		return nil, err
 	}
+	return &PublishAction{page: page}, nil
+}
 
-	return &PublishAction{
-		page: pp,
-	}, nil
+// Recovery is limited to blank-page preparation, before any upload or edit.
+func preparePublishPage(page *rod.Page, tab string) error {
+	attempt := func() error {
+		if err := BrowserStep(page, "publish.navigate", "creator document load", navigationStepTimeout, func(p *rod.Page) error {
+			if err := p.Navigate(urlOfPublic); err != nil {
+				return err
+			}
+			if err := p.WaitLoad(); err != nil {
+				return err
+			}
+			return pageGuard(p)
+		}); err != nil {
+			return err
+		}
+		return BrowserStep(page, "publish.upload_tab", "div.upload-content / div.creator-tab", elementStepTimeout, func(p *rod.Page) error {
+			if err := pageGuard(p); err != nil {
+				return err
+			}
+			return mustClickPublishTab(p, tab)
+		})
+	}
+	recovery := func() error {
+		return BrowserStep(page, "publish.recovery_guard", "risk/login state", 3*time.Second, pageGuard)
+	}
+	return recoverPageOnce(page.GetContext(), attempt, recovery)
 }
 
 func (p *PublishAction) Publish(ctx context.Context, content PublishImageContent) error {
@@ -147,12 +157,21 @@ func clickEmptyPosition(page *rod.Page) {
 }
 
 func mustClickPublishTab(page *rod.Page, tabname string) error {
-	page.MustElement(`div.upload-content`).MustWaitVisible()
+	elem, err := page.Element(`div.upload-content`)
+	if err != nil {
+		return err
+	}
+	if err := elem.WaitVisible(); err != nil {
+		return err
+	}
 
 	deadline := time.Now().Add(15 * time.Second)
 	blockedAtLeastOnce := false
 
 	for time.Now().Before(deadline) {
+		if err := page.GetContext().Err(); err != nil {
+			return err
+		}
 		tab, blocked, err := getTabElement(page, tabname)
 		if err != nil {
 			logrus.Warnf("获取发布 TAB 元素失败: %v", err)
@@ -257,18 +276,20 @@ func uploadImages(ctx context.Context, page *rod.Page, imagesPaths []string) err
 
 	// 逐张上传：每张上传后等待预览出现，再上传下一张
 	for i, path := range imagesPaths {
-		uploadInput, err := findImageUploadInput(page, i == 0)
-		if err != nil {
-			return errors.Wrapf(err, "查找上传输入框失败(第%d张)", i+1)
-		}
-		if err := uploadInput.SetFiles([]string{path}); err != nil {
-			return errors.Wrapf(err, "上传第%d张图片失败", i+1)
+		if err := BrowserStep(page, fmt.Sprintf("publish.upload_input_%d", i+1), ".upload-input / input[type=file]", elementStepTimeout, func(p *rod.Page) error {
+			uploadInput, err := findImageUploadInput(p, i == 0)
+			if err != nil {
+				return err
+			}
+			return uploadInput.SetFiles([]string{path})
+		}); err != nil {
+			return err
 		}
 
 		slog.Info("图片已提交上传", "index", i+1)
 
 		// 等待当前图片上传完成（预览元素数量达到 i+1），最多等 60 秒
-		if err := waitForUploadComplete(ctx, page, i+1); err != nil {
+		if err := BrowserStep(page, fmt.Sprintf("publish.upload_preview_%d", i+1), fmt.Sprintf(".img-preview-area .pr count >= %d", i+1), 60*time.Second, func(p *rod.Page) error { return waitForUploadComplete(p.GetContext(), p, i+1) }); err != nil {
 			return errors.Wrapf(err, "第%d张图片上传超时", i+1)
 		}
 		time.Sleep(1 * time.Second)
@@ -340,8 +361,11 @@ func waitForUploadComplete(ctx context.Context, page *rod.Page, expectedCount in
 			return errors.Errorf("第%d张图片上传超过 %s", expectedCount, maxWaitTime)
 		case <-ticker.C:
 		}
+		if err := pageGuard(page.Timeout(2 * time.Second)); err != nil {
+			return err
+		}
 
-		uploadedImages, err := page.Elements(".img-preview-area .pr")
+		uploadedImages, err := page.Timeout(2 * time.Second).Elements(".img-preview-area .pr")
 		if err != nil {
 			continue
 		}
@@ -378,27 +402,40 @@ func uploadWaitBudget(ctx context.Context, perImageMaximum time.Duration) (time.
 
 func submitPublish(ctx context.Context, page *rod.Page, title, content string, tags []string, scheduleTime *time.Time, isOriginal, aiGenerated bool, visibility string, products []string) error {
 	slog.Info("发布阶段", "stage", "title_start")
-	titleElem, err := page.Element("div.d-input input")
+	titleElem, err := stepElement(page, "publish.title_input", "div.d-input input")
 	if err != nil {
 		return errors.Wrap(err, "查找标题输入框失败")
 	}
-	if err := humanize.Type(ctx, titleElem, title); err != nil {
+	if err := BrowserStep(page, "publish.title_input", "div.d-input input writable", elementStepTimeout, func(p *rod.Page) error {
+		return humanize.Type(p.GetContext(), titleElem.Context(p.GetContext()), title)
+	}); err != nil {
 		return errors.Wrap(err, "输入标题失败")
 	}
 
 	humanize.Delay(ctx, humanize.AfterType)
-	if err := checkTitleMaxLength(page); err != nil {
+	if err := BrowserStep(page, "publish.title_validation", "title limit state", elementStepTimeout, checkTitleMaxLength); err != nil {
 		return err
 	}
 	slog.Info("检查标题长度：通过")
 
 	humanize.Delay(ctx, humanize.AfterType)
 
-	contentElem, err := getContentElement(page, contentElemTimeout)
+	var contentElem *rod.Element
+	err = BrowserStep(page, "publish.body_editor", strings.Join(contentElemSelectors, " / "), elementStepTimeout, func(p *rod.Page) error {
+		var err error
+		contentElem, err = getContentElement(p, contentElemTimeout)
+		return err
+	})
 	if err != nil {
 		return err
 	}
-	if err := typePublishBody(ctx, contentElem, content); err != nil {
+	contentElem, err = rebindElement(page, contentElem, "publish.body_rebind", "body editor")
+	if err != nil {
+		return err
+	}
+	if err := BrowserStep(page, "publish.body_input", "contenteditable writable + normalized verification", elementStepTimeout, func(p *rod.Page) error {
+		return typePublishBody(p.GetContext(), contentElem.Context(p.GetContext()), content)
+	}); err != nil {
 		return errors.Wrap(err, "输入正文失败")
 	}
 	slog.Info("发布阶段", "stage", "body_done")
@@ -409,57 +446,43 @@ func submitPublish(ctx context.Context, page *rod.Page, title, content string, t
 
 	humanize.Delay(ctx, humanize.AfterType)
 
-	if err := checkContentMaxLength(page); err != nil {
+	if err := BrowserStep(page, "publish.body_validation", "body limit state", elementStepTimeout, checkContentMaxLength); err != nil {
 		return err
 	}
 	slog.Info("检查正文长度：通过")
 
 	if scheduleTime != nil {
-		if err := setSchedulePublish(ctx, page, *scheduleTime); err != nil {
+		if err := BrowserStep(page, "publish.schedule", ".post-time-wrapper .d-switch / .date-picker-container input", 20*time.Second, func(p *rod.Page) error { return setSchedulePublish(p.GetContext(), p, *scheduleTime) }); err != nil {
 			return errors.Wrap(err, "设置定时发布失败")
 		}
 		slog.Info("定时发布设置完成", "schedule_time", scheduleTime.Format("2006-01-02 15:04"))
 	}
 
-	if err := setVisibility(page, visibility); err != nil {
+	if err := BrowserStep(page, "publish.visibility", "visible visibility control + confirmed selection", 20*time.Second, func(p *rod.Page) error { return setImageVisibility(p, visibility) }); err != nil {
 		return errors.Wrap(err, "设置可见范围失败")
 	}
 
 	// 处理原创声明：显式请求了原创但设置失败 → 报错中止，不静默发成非原创（避免"以为原创其实不是"）
 	if isOriginal {
-		if err := setOriginal(page); err != nil {
+		if err := BrowserStep(page, "publish.original", "原创声明 / confirmation", 20*time.Second, setOriginal); err != nil {
 			return errors.Wrap(err, "设置原创声明失败（已请求原创，中止发布）")
 		}
 		slog.Info("已声明原创")
 	}
 	slog.Info("发布阶段", "stage", "settings_done")
 
-	if err := bindProducts(ctx, page, products); err != nil {
+	if err := BrowserStep(page, "publish.products", "goods modal", 30*time.Second, func(p *rod.Page) error { return bindProducts(p.GetContext(), p, products) }); err != nil {
 		return errors.Wrap(err, "绑定商品失败")
 	}
-	if err := ensureAIGeneratedDeclaration(&rodAIDeclarationUI{page: page}, aiGenerated); err != nil {
+	if err := BrowserStep(page, "publish.ai_declaration", "AI dropdown description AND declaration summary", 20*time.Second, func(p *rod.Page) error {
+		return ensureAIGeneratedDeclaration(&rodAIDeclarationUI{page: p}, aiGenerated)
+	}); err != nil {
 		return err
 	}
 
-	// Reserve time to confirm the result. If the client is about to time out,
-	// stop before the irreversible click rather than leaving an unknown outcome.
-	if deadline, ok := ctx.Deadline(); ok && time.Until(deadline) < 16*time.Second {
-		return errors.New("发布前剩余时间不足16秒，未点击发布按钮；请缩短正文或标签后重试")
-	}
 	slog.Info("发布阶段", "stage", "submit_start")
-	if err := clickPublishButtonWithin(page, 3*time.Second); err != nil {
-		return err
-	}
-	slog.Info("发布阶段", "stage", "submit_clicked")
-
-	// 只接受明确的成功提示或已发布笔记页；点击本身不代表发布成功。
-	return waitPublishSuccess(page, 12*time.Second)
+	return submitPublishOnce(page)
 }
-
-const (
-	aiDeclarationPlaceholder = "添加内容类型声明"
-	aiDeclarationSelected    = "笔记含AI合成内容"
-)
 
 type aiDeclarationUI interface {
 	IsAIContentDeclared() (bool, error)
@@ -469,128 +492,68 @@ type aiDeclarationUI interface {
 
 // ensureAIGeneratedDeclaration is deliberately a no-op when disabled. When
 // enabled, every step is required and verification must succeed before publish.
-func ensureAIGeneratedDeclaration(ui aiDeclarationUI, enabled bool) error {
+func ensureAIGeneratedDeclaration(ui aiDeclarationUI, enabled bool) (result error) {
 	if !enabled {
 		return nil
+	}
+	defer func() {
+		var failure *aiDeclarationError
+		if errors.As(result, &failure) {
+			if source, ok := ui.(*rodAIDeclarationUI); ok {
+				failure.Diagnostic = source.diagnostic
+			}
+		}
+	}()
+
+	found, err := ui.OpenDeclarationEntry()
+	if err != nil {
+		return aiDeclarationFailure("declaration_entry_click_failed", err)
+	}
+	if !found {
+		return aiDeclarationFailure("declaration_entry_not_found", nil)
 	}
 
 	selected, err := ui.IsAIContentDeclared()
 	if err != nil {
-		return fmt.Errorf("检查AI声明状态失败: %w", err)
+		return aiDeclarationFailure("ai_state_read_failed", err)
 	}
 	if selected {
 		return nil
 	}
 
-	found, err := ui.OpenDeclarationEntry()
-	if err != nil {
-		return fmt.Errorf("点击AI声明入口失败: %w", err)
-	}
-	if !found {
-		return errors.New("找不到AI声明入口：未找到“添加内容类型声明”控件")
-	}
-
 	found, err = ui.SelectAIContentDeclaration()
 	if err != nil {
-		return fmt.Errorf("点击AI声明选项失败: %w", err)
+		return aiDeclarationFailure("ai_option_click_failed", err)
 	}
 	if !found {
-		return errors.New("找不到AI声明入口：下拉项“笔记含AI合成内容”不存在")
+		return aiDeclarationFailure("ai_option_not_found", nil)
 	}
 
-	selected, err = ui.IsAIContentDeclared()
-	if err != nil || !selected {
+	// Real web controls close the panel and expose state outside the option.
+	// Do not reopen: it can obscure the echoes and is not confirmation evidence.
+	if source, ok := ui.(*rodAIDeclarationUI); ok {
+		return source.waitConfirmed()
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		selected, err = ui.IsAIContentDeclared()
 		if err != nil {
-			return fmt.Errorf("AI声明点击后状态未生效，且复核失败: %w", err)
+			return aiDeclarationFailure("ai_option_not_selected_after_click", err)
 		}
-		return errors.New("AI声明点击后状态未生效：未确认已选择“笔记含AI合成内容”，已中止发布")
-	}
-	return nil
-}
-
-type rodAIDeclarationUI struct{ page *rod.Page }
-
-func (ui *rodAIDeclarationUI) IsAIContentDeclared() (bool, error) {
-	selects, err := ui.page.Elements("div.d-select")
-	if err != nil {
-		return false, err
-	}
-	for _, elem := range selects {
-		if !isElementVisible(elem) {
-			continue
+		if selected {
+			return nil
 		}
-		text, err := elem.Text()
-		if err == nil && strings.TrimSpace(text) == aiDeclarationSelected {
-			return true, nil
+		if time.Now().After(deadline) {
+			return aiDeclarationFailure("ai_option_not_selected_after_click", nil)
 		}
-	}
-	return false, nil
-}
-
-func (ui *rodAIDeclarationUI) OpenDeclarationEntry() (bool, error) {
-	entry, err := ui.findDeclarationSelect(aiDeclarationPlaceholder)
-	if err != nil {
-		return false, err
-	}
-	if entry == nil {
-		// 内容设置在部分页面状态下会折叠；只有入口不存在时才尝试展开。
-		heading, err := findVisibleExactText(ui.page, "内容设置")
-		if err != nil {
-			return false, err
-		}
-		if heading != nil {
-			if err := humanize.Click(heading); err != nil {
-				return false, err
+		if source, ok := ui.(*rodAIDeclarationUI); ok {
+			if err := aiDeclarationPause(source.page.GetContext()); err != nil {
+				return aiDeclarationFailure("ai_option_not_selected_after_click", err)
 			}
-			_ = ui.page.Timeout(2*time.Second).WaitDOMStable(200*time.Millisecond, 0.1)
-			entry, err = ui.findDeclarationSelect(aiDeclarationPlaceholder)
-			if err != nil {
-				return false, err
-			}
+		} else {
+			time.Sleep(100 * time.Millisecond)
 		}
 	}
-	if entry == nil {
-		return false, nil
-	}
-	if err := humanize.Click(entry); err != nil {
-		return false, err
-	}
-	return true, nil
-}
-
-func (ui *rodAIDeclarationUI) SelectAIContentDeclaration() (bool, error) {
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		option, err := findVisibleExactText(ui.page, aiDeclarationSelected)
-		if err != nil {
-			return false, err
-		}
-		if option != nil {
-			if err := humanize.Click(option); err != nil {
-				return false, err
-			}
-			return true, nil
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-	return false, nil
-}
-
-func (ui *rodAIDeclarationUI) findDeclarationSelect(expected string) (*rod.Element, error) {
-	selects, err := ui.page.Elements("div.d-select")
-	if err != nil {
-		return nil, err
-	}
-	for _, elem := range selects {
-		if !isElementVisible(elem) {
-			continue
-		}
-		text, err := elem.Text()
-		if err == nil && strings.TrimSpace(text) == expected {
-			return elem, nil
-		}
-	}
-	return nil, nil
 }
 
 // findVisibleExactText resolves actual rendered text first, then clicks its
@@ -702,12 +665,19 @@ func firstDifferentRune(a, b string) int {
 
 // waitPublishSuccess 轮询明确的成功提示或笔记页，避免把登录跳转当作成功。
 func waitPublishSuccess(page *rod.Page, timeout time.Duration) error {
+	return BrowserStep(page, "publish.confirmation", "发布成功 / validated note URL", timeout, func(p *rod.Page) error { return pollPublishSuccess(p, timeout) })
+}
+
+func pollPublishSuccess(page *rod.Page, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	for {
+		if err := page.GetContext().Err(); err != nil {
+			return err
+		}
 		if info, err := page.Info(); err == nil {
 			if u, parseErr := url.Parse(info.URL); parseErr == nil {
 				segments := strings.Split(strings.Trim(u.Path, "/"), "/")
-				if len(segments) == 2 && segments[0] == "explore" && segments[1] != "" {
+				if (u.Hostname() == "www.xiaohongshu.com" || u.Hostname() == "xiaohongshu.com") && len(segments) == 2 && segments[0] == "explore" && len(segments[1]) == 24 {
 					slog.Info("发布已跳转笔记页", "stage", "confirmed_note")
 					return nil
 				}
@@ -719,6 +689,9 @@ func waitPublishSuccess(page *rod.Page, timeout time.Duration) error {
 		if err == nil && visibleSuccess.Value.Bool() {
 			slog.Info("发布成功提示已出现", "stage", "confirmed_success_ui")
 			return nil
+		}
+		if err := pageGuard(page.Timeout(2 * time.Second)); err != nil {
+			return err
 		}
 		if time.Now().After(deadline) {
 			return errors.New("发布按钮已点击，但未发现成功提示或笔记页；结果未确认，请先检查账号主页，勿直接重试")
@@ -772,6 +745,12 @@ func waitForPublishButtonClickable(page *rod.Page, maxWait time.Duration) (*publ
 	slog.Info("开始等待发布按钮可点击")
 
 	for time.Since(start) < maxWait {
+		if err := page.GetContext().Err(); err != nil {
+			return nil, err
+		}
+		if err := pageGuard(page.Timeout(2 * time.Second)); err != nil {
+			return nil, err
+		}
 		btn, disabledReason, err := findPublishButton(page)
 		if err != nil {
 			slog.Warn("查找发布按钮失败，继续等待", "error", err)
@@ -967,6 +946,9 @@ func getContentElement(page *rod.Page, timeout time.Duration) (*rod.Element, err
 		if time.Now().After(deadline) {
 			return nil, errors.Wrap(err, "查找正文输入框失败")
 		}
+		if err := page.GetContext().Err(); err != nil {
+			return nil, err
+		}
 		time.Sleep(300 * time.Millisecond)
 	}
 }
@@ -989,36 +971,44 @@ func findContentElement(page *rod.Page) (*rod.Element, error) {
 }
 
 func inputTags(ctx context.Context, contentElem *rod.Element, tags []string) error {
+	end := rodscope.Bind(contentElem.Page(), ctx)
+	defer end()
 	if len(tags) == 0 {
 		return nil
 	}
 
-	time.Sleep(1 * time.Second)
+	if err := BrowserStep(contentElem.Page(), "publish.tag_prepare", "editor keyboard", elementStepTimeout, func(p *rod.Page) error {
+		end := rodscope.Bind(contentElem.Page(), p.GetContext())
+		defer end()
+		time.Sleep(1 * time.Second)
+		for i := 0; i < 20; i++ {
+			ka, err := contentElem.KeyActions()
+			if err != nil {
+				return errors.Wrap(err, "创建键盘操作失败")
+			}
+			if err := ka.Type(input.ArrowDown).Do(); err != nil {
+				return errors.Wrap(err, "按下方向键失败")
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
 
-	for i := 0; i < 20; i++ {
 		ka, err := contentElem.KeyActions()
 		if err != nil {
 			return errors.Wrap(err, "创建键盘操作失败")
 		}
-		if err := ka.Type(input.ArrowDown).Do(); err != nil {
-			return errors.Wrap(err, "按下方向键失败")
+		if err := ka.Press(input.Enter).Press(input.Enter).Do(); err != nil {
+			return errors.Wrap(err, "按下回车键失败")
 		}
-		time.Sleep(10 * time.Millisecond)
-	}
-
-	ka, err := contentElem.KeyActions()
-	if err != nil {
-		return errors.Wrap(err, "创建键盘操作失败")
-	}
-	if err := ka.Press(input.Enter).Press(input.Enter).Do(); err != nil {
-		return errors.Wrap(err, "按下回车键失败")
+		return nil
+	}); err != nil {
+		return err
 	}
 
 	time.Sleep(1 * time.Second)
 
 	for _, tag := range tags {
 		tag = strings.TrimLeft(tag, "#")
-		if err := inputTag(ctx, contentElem, tag); err != nil {
+		if err := BrowserStep(contentElem.Page(), "publish.tag", "topic suggestion or text fallback", 20*time.Second, func(p *rod.Page) error { return inputTag(p.GetContext(), contentElem.Context(p.GetContext()), tag) }); err != nil {
 			return errors.Wrapf(err, "输入标签[%s]失败", tag)
 		}
 	}
@@ -1039,17 +1029,24 @@ func inputTag(ctx context.Context, contentElem *rod.Element, tag string) error {
 	time.Sleep(1 * time.Second) // 技术等待：等联想结果刷新
 
 	page := contentElem.Page()
-	topicContainer, err := page.Element("#creator-editor-topic-container")
-	if err != nil || topicContainer == nil {
+	exists, topicContainer, err := page.Timeout(2 * time.Second).Has("#creator-editor-topic-container")
+	if err != nil {
+		return err
+	}
+	if !exists || topicContainer == nil {
 		slog.Warn("未找到标签联想下拉框，直接输入空格", "tag", tag)
 		return humanize.Type(ctx, contentElem, " ")
 	}
 
-	firstItem, err := topicContainer.Element(".item")
-	if err != nil || firstItem == nil {
+	items, err := topicContainer.Elements(".item")
+	if err != nil {
+		return err
+	}
+	if len(items) == 0 {
 		slog.Warn("未找到标签联想选项，直接输入空格", "tag", tag)
 		return humanize.Type(ctx, contentElem, " ")
 	}
+	firstItem := items[0]
 
 	if err := humanize.Click(firstItem); err != nil {
 		return errors.Wrap(err, "点击标签联想选项失败")

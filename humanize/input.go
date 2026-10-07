@@ -1,3 +1,4 @@
+// Modified by the xiaohongshu-mcp-chatgpt maintainers; see NOTICE for derivative changes.
 package humanize
 
 import (
@@ -11,14 +12,21 @@ import (
 
 	"github.com/go-rod/rod"
 	"github.com/go-rod/rod/lib/proto"
+	"github.com/xpzouying/xiaohongshu-mcp/internal/rodscope"
 )
 
-func pressAndRelease(mouse *rod.Mouse) error {
+func pressAndRelease(ctx context.Context, mouse *rod.Mouse) error {
 	if err := mouse.Down(proto.InputMouseButtonLeft, 1); err != nil {
 		return err
 	}
 
-	time.Sleep(defaultProvider.Timing()[ClickHold].Sample())
+	timer := time.NewTimer(defaultProvider.Timing()[ClickHold].Sample())
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 
 	return mouse.Up(proto.InputMouseButtonLeft, 1)
 }
@@ -77,6 +85,11 @@ func ensureClickable(elem *rod.Element, pt proto.Point) error {
 }
 
 func Click(elem *rod.Element) error {
+	ctx, cancel := context.WithTimeout(elem.GetContext(), 10*time.Second)
+	defer cancel()
+	end := rodscope.Bind(elem.Page(), ctx)
+	defer end()
+	elem = elem.Context(ctx)
 	pt, err := elem.WaitInteractable()
 	if err != nil {
 		return err
@@ -92,17 +105,22 @@ func Click(elem *rod.Element) error {
 		return err
 	}
 
-	Delay(elem.Page().GetContext(), PointerSettle)
+	Delay(ctx, PointerSettle)
 
 	if err := elem.WaitEnabled(); err != nil {
 		return err
 	}
 
-	return pressAndRelease(mouse)
+	return pressAndRelease(ctx, mouse)
 }
 
 // ClickNoWait 跳过 WaitInteractable 的遮挡重试，用于它会误判而死等的场景。
 func ClickNoWait(elem *rod.Element) error {
+	ctx, cancel := context.WithTimeout(elem.GetContext(), 10*time.Second)
+	defer cancel()
+	end := rodscope.Bind(elem.Page(), ctx)
+	defer end()
+	elem = elem.Context(ctx)
 	shape, err := elem.Shape()
 	if err != nil {
 		return err
@@ -123,14 +141,21 @@ func ClickNoWait(elem *rod.Element) error {
 	if err := moveMouseCurved(mouse, target); err != nil {
 		return err
 	}
-	return pressAndRelease(mouse)
+	return pressAndRelease(ctx, mouse)
 }
 
 func MoveTo(page *rod.Page, pt proto.Point) error {
+	end := rodscope.Bind(page, page.GetContext())
+	defer end()
 	return moveMouseCurved(page.Mouse, pt)
 }
 
 func Hover(elem *rod.Element) error {
+	ctx, cancel := context.WithTimeout(elem.GetContext(), 10*time.Second)
+	defer cancel()
+	end := rodscope.Bind(elem.Page(), ctx)
+	defer end()
+	elem = elem.Context(ctx)
 	shape, err := elem.Shape()
 	if err != nil {
 		return err
@@ -151,25 +176,37 @@ func Hover(elem *rod.Element) error {
 }
 
 func ClickAt(page *rod.Page, pt proto.Point) error {
+	end := rodscope.Bind(page, page.GetContext())
+	defer end()
 	if err := ensurePointInViewport(page, pt); err != nil {
 		return err
 	}
 	if err := moveMouseCurved(page.Mouse, pt); err != nil {
 		return err
 	}
-	return pressAndRelease(page.Mouse)
+	return pressAndRelease(page.GetContext(), page.Mouse)
 }
 
 func Type(ctx context.Context, elem *rod.Element, text string) error {
+	end := rodscope.Bind(elem.Page(), ctx)
+	defer end()
 	dist := defaultProvider.Timing()[Keystroke]
-
-	if err := elem.Focus(); err != nil {
-		return err
-	}
-	if err := elem.WaitEnabled(); err != nil {
-		return err
-	}
-	if err := elem.WaitWritable(); err != nil {
+	// Bound only readiness checks; normal human-paced typing retains its original
+	// caller budget, rather than failing a long but valid body after ten seconds.
+	if err := func() error {
+		readyCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
+		end := rodscope.Bind(elem.Page(), readyCtx)
+		defer end()
+		ready := elem.Context(readyCtx)
+		if err := ready.Focus(); err != nil {
+			return err
+		}
+		if err := ready.WaitEnabled(); err != nil {
+			return err
+		}
+		return ready.WaitWritable()
+	}(); err != nil {
 		return err
 	}
 

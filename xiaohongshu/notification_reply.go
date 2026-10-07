@@ -1,3 +1,4 @@
+// Modified by the xiaohongshu-mcp-chatgpt maintainers; see NOTICE for derivative changes.
 package xiaohongshu
 
 import (
@@ -28,9 +29,11 @@ func (n *NotificationAction) Reply(ctx context.Context, commentID, content strin
 		return nil, fmt.Errorf("回复内容不能为空")
 	}
 
-	page := n.page.Timeout(3 * time.Minute)
+	page := n.page.Context(ctx).Timeout(3 * time.Minute)
 
-	page.MustNavigate("https://www.xiaohongshu.com/notification").MustWaitLoad()
+	if err := NavigateBrowserPage(page, "https://www.xiaohongshu.com/notification", "notification_reply.prepare"); err != nil {
+		return nil, err
+	}
 	humanize.Delay(ctx, humanize.AfterNavigate)
 
 	target, index, err := n.locate(ctx, page, commentID)
@@ -49,7 +52,7 @@ func (n *NotificationAction) Reply(ctx context.Context, commentID, content strin
 
 	humanize.Delay(ctx, humanize.Reading)
 
-	replyBtn, err := item.Element(`.action-reply`)
+	replyBtn, err := item.Timeout(elementStepTimeout).Element(`.action-reply`)
 	if err != nil {
 		return nil, fmt.Errorf("该通知没有回复入口（评论可能已删除或不可回复）: %w", err)
 	}
@@ -60,7 +63,7 @@ func (n *NotificationAction) Reply(ctx context.Context, commentID, content strin
 	}
 	humanize.Delay(ctx, humanize.AfterClick)
 
-	input, err := item.Element(`textarea.comment-input`)
+	input, err := item.Timeout(elementStepTimeout).Element(`textarea.comment-input`)
 	if err != nil {
 		return nil, fmt.Errorf("回复输入框未出现: %w", err)
 	}
@@ -123,7 +126,7 @@ func (n *NotificationAction) locate(ctx context.Context, page *rod.Page, comment
 			return nil, 0, fmt.Errorf("未找到评论 %s，它可能不在「评论和@」里或已被清理", commentID)
 		}
 
-		if err := page.Mouse.Scroll(0, 800, 5); err != nil {
+		if err := BrowserStep(page, "notifications.scroll", "scroll command", elementStepTimeout, func(p *rod.Page) error { return p.Mouse.Scroll(0, 800, 5) }); err != nil {
 			return nil, 0, fmt.Errorf("滚动查找失败: %w", err)
 		}
 		humanize.Delay(ctx, humanize.BetweenScroll)

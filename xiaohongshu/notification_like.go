@@ -1,3 +1,4 @@
+// Modified by the xiaohongshu-mcp-chatgpt maintainers; see NOTICE for derivative changes.
 package xiaohongshu
 
 import (
@@ -30,9 +31,11 @@ func (n *NotificationAction) Like(ctx context.Context, commentID string, unlike 
 	}
 
 	want := !unlike
-	page := n.page.Timeout(3 * time.Minute)
+	page := n.page.Context(ctx).Timeout(3 * time.Minute)
 
-	page.MustNavigate("https://www.xiaohongshu.com/notification").MustWaitLoad()
+	if err := NavigateBrowserPage(page, "https://www.xiaohongshu.com/notification", "notification_like.prepare"); err != nil {
+		return nil, err
+	}
 	humanize.Delay(ctx, humanize.AfterNavigate)
 
 	target, index, err := n.locate(ctx, page, commentID)
@@ -62,7 +65,7 @@ func (n *NotificationAction) Like(ctx context.Context, commentID string, unlike 
 
 	humanize.Delay(ctx, humanize.Reading)
 
-	btn, err := items[index].Element(`.action-like .like-wrapper`)
+	btn, err := items[index].Timeout(elementStepTimeout).Element(`.action-like .like-wrapper`)
 	if err != nil {
 		return nil, fmt.Errorf("该通知没有点赞入口（评论可能已删除或不可点赞）: %w", err)
 	}

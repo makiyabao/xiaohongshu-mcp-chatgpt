@@ -1,3 +1,4 @@
+// Modified by the xiaohongshu-mcp-chatgpt maintainers; see NOTICE for derivative changes.
 package xiaohongshu
 
 import (
@@ -20,7 +21,9 @@ func NewLogin(page *rod.Page) *LoginAction {
 func (a *LoginAction) CheckLoginStatus(ctx context.Context) (bool, error) {
 	// 加超时保护：只是查登录态的快速检查，不应无限挂（登录扫码的等待在 Login/WaitForLogin 里）
 	pp := a.page.Context(ctx).Timeout(30 * time.Second)
-	pp.MustNavigate("https://www.xiaohongshu.com/explore").MustWaitLoad()
+	if err := NavigateBrowserPage(pp, "https://www.xiaohongshu.com/explore", "login_status.navigate"); err != nil {
+		return false, err
+	}
 
 	time.Sleep(1 * time.Second)
 
@@ -74,7 +77,9 @@ func (a *LoginAction) Login(ctx context.Context) error {
 	pp := a.page.Context(ctx)
 
 	// 导航到小红书首页，这会触发二维码弹窗
-	pp.MustNavigate("https://www.xiaohongshu.com/explore").MustWaitLoad()
+	if err := NavigateBrowserPage(pp, "https://www.xiaohongshu.com/explore", "login.navigate"); err != nil {
+		return err
+	}
 
 	time.Sleep(2 * time.Second)
 
@@ -82,16 +87,21 @@ func (a *LoginAction) Login(ctx context.Context) error {
 		return nil
 	}
 
-	pp.MustElement(".main-container .user .link-wrapper .channel")
-
-	return nil
+	// Human QR authorization retains the caller's login window. Each status
+	// probe is bounded, but a user is not forced to finish scanning in 15 seconds.
+	if a.WaitForLogin(ctx) {
+		return nil
+	}
+	return errors.Wrap(ctx.Err(), "等待人工登录结束")
 }
 
 func (a *LoginAction) FetchQrcodeImage(ctx context.Context) (string, bool, error) {
 	pp := a.page.Context(ctx)
 
 	// 导航到小红书首页，这会触发二维码弹窗
-	pp.MustNavigate("https://www.xiaohongshu.com/explore").MustWaitLoad()
+	if err := NavigateBrowserPage(pp, "https://www.xiaohongshu.com/explore", "qrcode.navigate"); err != nil {
+		return "", false, err
+	}
 
 	time.Sleep(2 * time.Second)
 
@@ -99,7 +109,11 @@ func (a *LoginAction) FetchQrcodeImage(ctx context.Context) (string, bool, error
 		return "", true, nil
 	}
 
-	src, err := pp.MustElement(".login-container .qrcode-img").Attribute("src")
+	elem, err := stepElement(pp, "qrcode.image", ".login-container .qrcode-img")
+	if err != nil {
+		return "", false, err
+	}
+	src, err := elem.Timeout(3 * time.Second).Attribute("src")
 	if err != nil {
 		return "", false, errors.Wrap(err, "get qrcode src failed")
 	}
@@ -120,8 +134,8 @@ func (a *LoginAction) WaitForLogin(ctx context.Context) bool {
 		case <-ctx.Done():
 			return false
 		case <-ticker.C:
-			el, err := pp.Element(".main-container .user .link-wrapper .channel")
-			if err == nil && el != nil {
+			exists, _, err := pp.Timeout(time.Second).Has(".main-container .user .link-wrapper .channel")
+			if err == nil && exists {
 				return true
 			}
 		}

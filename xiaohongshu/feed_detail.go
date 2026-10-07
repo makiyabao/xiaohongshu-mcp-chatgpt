@@ -1,3 +1,4 @@
+// Modified by the xiaohongshu-mcp-chatgpt maintainers; see NOTICE for derivative changes.
 package xiaohongshu
 
 import (
@@ -101,24 +102,12 @@ func (f *FeedDetailAction) GetFeedDetailWithConfig(ctx context.Context, feedID, 
 	page := f.page.Context(ctx).Timeout(10 * time.Minute)
 	url := makeFeedDetailURL(feedID, xsecToken)
 
-	logrus.Infof("打开 feed 详情页: %s", url)
+	logrus.Infof("打开 feed 详情页: %s", safeDiagnosticURL(url))
 	logrus.Infof("配置: 点击更多=%v, 回复阈值=%d, 最大评论数=%d, 滚动速度=%s",
 		config.ClickMoreReplies, config.MaxRepliesThreshold, config.MaxCommentItems, config.ScrollSpeed)
 
-	// 使用retry-go处理页面导航和DOM稳定等待
-	err := retry.Do(
-		func() error {
-			page.MustNavigate(url)
-			page.MustWaitDOMStable()
-			return nil
-		},
-		retry.Attempts(3),
-		retry.Delay(500*time.Millisecond),
-		retry.MaxJitter(1000*time.Millisecond),
-		retry.OnRetry(func(n uint, err error) {
-			logrus.Debugf("页面导航重试 #%d: %v", n, err)
-		}),
-	)
+	// Read-only navigation has a step budget and at most one guarded recovery.
+	err := NavigateBrowserPage(page, url, "feed_detail.navigate")
 	if err != nil {
 		logrus.Errorf("页面导航失败: %v", err)
 		return nil, err
@@ -666,7 +655,7 @@ func smartScroll(page *rod.Page, delta float64) {
 			notch = remain
 		}
 
-		if err := page.Mouse.Scroll(0, notch, 1); err != nil {
+		if err := BrowserStep(page, "comments.scroll", "scroll command", elementStepTimeout, func(p *rod.Page) error { return p.Mouse.Scroll(0, notch, 1) }); err != nil {
 			return
 		}
 		remain -= notch

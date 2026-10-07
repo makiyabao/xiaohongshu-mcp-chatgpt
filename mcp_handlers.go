@@ -271,17 +271,19 @@ func (s *AppServer) handlePublishVideo(ctx context.Context, args map[string]inte
 
 	scheduleAt, _ := args["schedule_at"].(string)
 	visibility := parseVisibility(args)
+	aiGenerated, _ := args["ai_generated"].(bool)
 
 	logrus.Infof("MCP: 发布视频 - 标题: %s, 标签数量: %d, 定时: %s, visibility: %s, 商品: %v", title, len(tags), scheduleAt, visibility, products)
 
 	req := &PublishVideoRequest{
-		Title:      title,
-		Content:    content,
-		Video:      videoPath,
-		Tags:       tags,
-		ScheduleAt: scheduleAt,
-		Visibility: visibility,
-		Products:   products,
+		Title:       title,
+		Content:     content,
+		Video:       videoPath,
+		Tags:        tags,
+		ScheduleAt:  scheduleAt,
+		AIGenerated: aiGenerated,
+		Visibility:  visibility,
+		Products:    products,
 	}
 
 	result, err := s.xiaohongshuService.PublishVideo(ctx, req)

@@ -1,3 +1,4 @@
+// Modified by the xiaohongshu-mcp-chatgpt maintainers; see NOTICE for derivative changes.
 package xiaohongshu
 
 import (
@@ -8,7 +9,6 @@ import (
 	"time"
 
 	"github.com/go-rod/rod"
-	"github.com/sirupsen/logrus"
 	"github.com/xpzouying/xiaohongshu-mcp/humanize"
 )
 
@@ -97,13 +97,15 @@ func NewNotificationAction(page *rod.Page) *NotificationAction {
 
 // UnreadCount 读取三个分区的未读数。
 func (n *NotificationAction) UnreadCount(ctx context.Context) (*NotificationCount, error) {
-	page := n.page.Timeout(60 * time.Second)
+	page := n.page.Context(ctx).Timeout(60 * time.Second)
 
-	page.MustNavigate("https://www.xiaohongshu.com/explore").MustWaitLoad()
+	if err := NavigateBrowserPage(page, "https://www.xiaohongshu.com/explore", "notification.unread"); err != nil {
+		return nil, err
+	}
 	humanize.Delay(ctx, humanize.AfterNavigate)
 
-	if err := page.WaitStable(time.Second); err != nil {
-		logrus.Warnf("explore 页未稳定，继续读取未读数: %v", err)
+	if err := waitPageState(page, "notification.state", "notificationCount", `() => !!window.__INITIAL_STATE__?.notification?.notificationCount`); err != nil {
+		return nil, err
 	}
 
 	res, err := page.Eval(`() => {
@@ -146,9 +148,11 @@ func (n *NotificationAction) List(ctx context.Context, tab NotificationTab, limi
 		limit = 20
 	}
 
-	page := n.page.Timeout(3 * time.Minute)
+	page := n.page.Context(ctx).Timeout(3 * time.Minute)
 
-	page.MustNavigate("https://www.xiaohongshu.com/notification").MustWaitLoad()
+	if err := NavigateBrowserPage(page, "https://www.xiaohongshu.com/notification", "notification.list"); err != nil {
+		return nil, err
+	}
 	humanize.Delay(ctx, humanize.AfterNavigate)
 
 	if err := n.switchTab(ctx, page, tab); err != nil {
@@ -209,7 +213,7 @@ func (n *NotificationAction) loadUntil(ctx context.Context, page *rod.Page, tab 
 			return nil
 		}
 
-		if err := page.Mouse.Scroll(0, 800, 5); err != nil {
+		if err := BrowserStep(page, "notifications.scroll", "scroll command", elementStepTimeout, func(p *rod.Page) error { return p.Mouse.Scroll(0, 800, 5) }); err != nil {
 			return fmt.Errorf("滚动加载失败: %w", err)
 		}
 		humanize.Delay(ctx, humanize.BetweenScroll)

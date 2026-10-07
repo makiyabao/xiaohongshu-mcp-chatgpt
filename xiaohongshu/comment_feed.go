@@ -1,3 +1,4 @@
+// Modified by the xiaohongshu-mcp-chatgpt maintainers; see NOTICE for derivative changes.
 package xiaohongshu
 
 import (
@@ -23,14 +24,15 @@ func NewCommentFeedAction(page *rod.Page) *CommentFeedAction {
 // PostComment 发表评论到 Feed
 func (f *CommentFeedAction) PostComment(ctx context.Context, feedID, xsecToken, content string) error {
 	// 不使用 Context(ctx)，避免继承外部 context 的超时
-	page := f.page.Timeout(60 * time.Second)
+	page := f.page.Context(ctx).Timeout(60 * time.Second)
 
 	url := makeFeedDetailURL(feedID, xsecToken)
-	logrus.Infof("打开 feed 详情页: %s", url)
+	logrus.Infof("打开 feed 详情页: %s", safeDiagnosticURL(url))
 
 	// 导航到详情页
-	page.MustNavigate(url)
-	page.MustWaitDOMStable()
+	if err := NavigateBrowserPage(page, url, "comment.prepare"); err != nil {
+		return err
+	}
 	humanize.Delay(ctx, humanize.AfterNavigate)
 
 	// 检测页面是否可访问
@@ -38,7 +40,7 @@ func (f *CommentFeedAction) PostComment(ctx context.Context, feedID, xsecToken, 
 		return err
 	}
 
-	elem, err := page.Element("div.input-box div.content-edit span")
+	elem, err := stepElement(page, "comment.input_entry", "div.input-box div.content-edit span")
 	if err != nil {
 		logrus.Warnf("Failed to find comment input box: %v", err)
 		return fmt.Errorf("未找到评论输入框，该帖子可能不支持评论或网页端不可访问: %w", err)
@@ -50,7 +52,7 @@ func (f *CommentFeedAction) PostComment(ctx context.Context, feedID, xsecToken, 
 	}
 	humanize.Delay(ctx, humanize.AfterClick)
 
-	elem2, err := page.Element("div.input-box div.content-edit p.content-input")
+	elem2, err := stepElement(page, "comment.editor", "div.input-box div.content-edit p.content-input")
 	if err != nil {
 		logrus.Warnf("Failed to find comment input field: %v", err)
 		return fmt.Errorf("未找到评论输入区域: %w", err)
@@ -63,7 +65,7 @@ func (f *CommentFeedAction) PostComment(ctx context.Context, feedID, xsecToken, 
 
 	humanize.Delay(ctx, humanize.AfterType)
 
-	submitButton, err := page.Element("div.bottom button.submit")
+	submitButton, err := stepElement(page, "comment.submit", "div.bottom button.submit")
 	if err != nil {
 		logrus.Warnf("Failed to find submit button: %v", err)
 		return fmt.Errorf("未找到提交按钮: %w", err)
@@ -114,13 +116,14 @@ func waitCommentRendered(page *rod.Page, content string, timeout time.Duration) 
 func (f *CommentFeedAction) ReplyToComment(ctx context.Context, feedID, xsecToken, commentID, userID, content string) error {
 	// 增加超时时间，因为需要滚动查找评论
 	// 注意：不使用 Context(ctx)，避免继承外部 context 的超时
-	page := f.page.Timeout(5 * time.Minute)
+	page := f.page.Context(ctx).Timeout(5 * time.Minute)
 	url := makeFeedDetailURL(feedID, xsecToken)
-	logrus.Infof("打开 feed 详情页进行回复: %s", url)
+	logrus.Infof("打开 feed 详情页进行回复: %s", safeDiagnosticURL(url))
 
 	// 导航到详情页
-	page.MustNavigate(url)
-	page.MustWaitDOMStable()
+	if err := NavigateBrowserPage(page, url, "reply.prepare"); err != nil {
+		return err
+	}
 	humanize.Delay(ctx, humanize.AfterNavigate)
 
 	// 检测页面是否可访问
@@ -144,7 +147,7 @@ func (f *CommentFeedAction) ReplyToComment(ctx context.Context, feedID, xsecToke
 	logrus.Info("准备点击回复按钮")
 
 	// 查找并点击回复按钮
-	replyBtn, err := commentEl.Element(".right .interactions .reply")
+	replyBtn, err := commentEl.Timeout(elementStepTimeout).Element(".right .interactions .reply")
 	if err != nil {
 		return fmt.Errorf("无法找到回复按钮: %w", err)
 	}
@@ -156,7 +159,7 @@ func (f *CommentFeedAction) ReplyToComment(ctx context.Context, feedID, xsecToke
 	humanize.Delay(ctx, humanize.AfterClick)
 
 	// 查找回复输入框
-	inputEl, err := page.Element("div.input-box div.content-edit p.content-input")
+	inputEl, err := stepElement(page, "reply.editor", "div.input-box div.content-edit p.content-input")
 	if err != nil {
 		return fmt.Errorf("无法找到回复输入框: %w", err)
 	}
@@ -169,7 +172,7 @@ func (f *CommentFeedAction) ReplyToComment(ctx context.Context, feedID, xsecToke
 	humanize.Delay(ctx, humanize.AfterType)
 
 	// 查找并点击提交按钮
-	submitBtn, err := page.Element("div.bottom button.submit")
+	submitBtn, err := stepElement(page, "reply.submit", "div.bottom button.submit")
 	if err != nil {
 		return fmt.Errorf("无法找到提交按钮: %w", err)
 	}

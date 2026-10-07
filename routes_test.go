@@ -1,3 +1,4 @@
+// Modified by the xiaohongshu-mcp-chatgpt maintainers; see NOTICE for derivative changes.
 package main
 
 import (
@@ -51,6 +52,48 @@ func TestMCPStatelessSinglePost(t *testing.T) {
 
 	require.Nil(t, result.Error, "无握手的 tools/list 不应报错")
 	assert.NotEmpty(t, result.Result.Tools, "应返回已注册的工具")
+}
+
+// Video publication must expose the same optional, fail-closed AI declaration
+// switch as image publication. Tool discovery is read-only; no publish call.
+func TestPublishVideoAIGeneratedToolSchema(t *testing.T) {
+	router := setupRoutes(NewAppServer(NewXiaohongshuService(), ""))
+	server := httptest.NewServer(router)
+	defer server.Close()
+
+	req, err := http.NewRequest(http.MethodPost, server.URL+"/mcp",
+		strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	var result struct {
+		Result struct {
+			Tools []struct {
+				Name        string `json:"name"`
+				InputSchema struct {
+					Properties map[string]json.RawMessage `json:"properties"`
+					Required   []string                   `json:"required"`
+				} `json:"inputSchema"`
+			} `json:"tools"`
+		} `json:"result"`
+	}
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&result))
+	for _, tool := range result.Result.Tools {
+		if tool.Name == "publish_with_video" {
+			var property struct {
+				Type string `json:"type"`
+			}
+			require.NoError(t, json.Unmarshal(tool.InputSchema.Properties["ai_generated"], &property))
+			assert.Equal(t, "boolean", property.Type)
+			assert.NotContains(t, tool.InputSchema.Required, "ai_generated")
+			return
+		}
+	}
+	t.Fatal("publish_with_video missing from tools/list")
 }
 
 // TestNotificationToolsRegistered 固定通知相关工具已注册到 MCP。
